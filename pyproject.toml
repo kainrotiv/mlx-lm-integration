@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-ai-desktop"
+version = "0.1.0"
+description = "Local AI service and OpenAI-compatible API for the Local AI macOS app"
+requires-python = ">=3.10"
+dependencies = ["huggingface-hub>=0.27"]
+
+[project.optional-dependencies]
+mlx = ["mlx-lm>=0.21; platform_system == 'Darwin' and platform_machine == 'arm64'"]
+dev = []
+
+[project.scripts]
+local-ai = "local_ai.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
