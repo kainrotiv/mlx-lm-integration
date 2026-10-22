@@ -98,16 +98,10 @@ private final class ServiceController: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var prompt = ""
     @Published var isBusy = false
+    @Published var isDownloading = false
 
     private var process: Process?
     private let baseURL = URL(string: "http://127.0.0.1:11435")!
-
-    init() {
-        Task {
-            await loadSettings()
-            await refreshModels()
-        }
-    }
 
     func startService() {
         guard process?.isRunning != true else { return }
@@ -180,7 +174,7 @@ private final class ServiceController: ObservableObject {
         do {
             settings = try await get("/api/settings", as: AppSettings.self)
         } catch {
-            status = "Inicie o serviço para carregar as configurações."
+            status = "Falha ao carregar configuração: \(error.localizedDescription)"
         }
     }
 
@@ -189,7 +183,7 @@ private final class ServiceController: ObservableObject {
             let response = try await get("/api/models", as: ModelListResponse.self)
             installedModels = response.data
         } catch {
-            installedModels = []
+            status = "Falha ao carregar modelos locais: \(error.localizedDescription)"
         }
     }
 
@@ -223,7 +217,12 @@ private final class ServiceController: ObservableObject {
 
     func download(_ model: HuggingFaceModel) async {
         isBusy = true
-        defer { isBusy = false }
+        isDownloading = true
+        status = "Baixando \(model.id)…"
+        defer {
+            isBusy = false
+            isDownloading = false
+        }
         do {
             let result = try await sendJSON(
                 ["repo_id": model.id],
@@ -368,55 +367,451 @@ private enum APIError: LocalizedError {
     }
 }
 
+private enum WorkspacePage: String, CaseIterable, Identifiable {
+    case overview
+    case models
+    case chat
+    case vscode
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overview: "Visão geral"
+        case .models: "Modelos"
+        case .chat: "Playground"
+        case .vscode: "VS Code"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .overview: "square.grid.2x2"
+        case .models: "shippingbox"
+        case .chat: "bubble.left.and.bubble.right"
+        case .vscode: "chevron.left.forwardslash.chevron.right"
+        }
+    }
+}
+
 private struct ContentView: View {
     @EnvironmentObject private var controller: ServiceController
+    @State private var selectedPage: WorkspacePage? = .overview
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    settingsSection
-                    huggingFaceSection
-                    chatSection
-                    ideSection
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 260)
+        } detail: {
+            VStack(spacing: 0) {
+                header
+                Divider()
+                ScrollView {
+                    pageContent
+                        .padding(28)
+                        .frame(maxWidth: 1040, alignment: .leading)
+                        .frame(maxWidth: .infinity)
                 }
-                .padding(24)
-                .frame(maxWidth: 900, alignment: .leading)
-                .frame(maxWidth: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor))
+                Divider()
+                statusBar
             }
-            Divider()
-            Text(controller.status)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 10)
         }
+        .tint(Color.accentColor)
         .onDisappear {
             controller.stopService()
         }
     }
 
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 11) {
+                Image(systemName: "cpu.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.accentColor, Color.accentColor.opacity(0.72)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local AI").font(.headline)
+                    Text("MLX WORKSPACE")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .tracking(1.1)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 20)
+            .padding(.bottom, 18)
+
+            List(selection: $selectedPage) {
+                Section("WORKSPACE") {
+                    ForEach([WorkspacePage.overview, .models, .chat]) { page in
+                        Label(page.title, systemImage: page.icon)
+                            .tag(page)
+                    }
+                }
+                Section("INTEGRAÇÕES") {
+                    Label(WorkspacePage.vscode.title, systemImage: WorkspacePage.vscode.icon)
+                        .tag(WorkspacePage.vscode)
+                }
+            }
+            .listStyle(.sidebar)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(controller.isRunning ? Color.green : Color.secondary.opacity(0.55))
+                        .frame(width: 8, height: 8)
+                    Text(controller.isRunning ? "Serviço local ativo" : "Serviço desconectado")
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                }
+                Text(controller.settings.model.isEmpty ? "Nenhum modelo selecionado" : controller.settings.model)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                Button {
+                    controller.isRunning ? controller.stopService() : controller.startService()
+                } label: {
+                    Label(
+                        controller.isRunning ? "Parar serviço" : "Iniciar serviço",
+                        systemImage: controller.isRunning ? "stop.fill" : "play.fill"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(14)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(12)
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    @ViewBuilder
+    private var pageContent: some View {
+        switch selectedPage ?? .overview {
+        case .overview:
+            overviewPage
+        case .models:
+            modelsPage
+        case .chat:
+            chatPage
+        case .vscode:
+            vscodePage
+        }
+    }
+
+    private var overviewPage: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .top, spacing: 20) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Seu laboratório de IA, no Mac.")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .tracking(-0.7)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Execute modelos localmente com MLX e conecte suas ferramentas de desenvolvimento.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 25, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 58, height: 58)
+                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 12) {
+                statusMetric(
+                    title: "SERVIÇO",
+                    value: controller.isRunning ? "Pronto" : "Desconectado",
+                    icon: controller.isRunning ? "bolt.horizontal.circle.fill" : "bolt.slash.circle",
+                    tint: controller.isRunning ? .green : .secondary
+                )
+                statusMetric(title: "MOTOR", value: runtimeName, icon: "cpu", tint: .accentColor)
+                statusMetric(
+                    title: "MODELOS",
+                    value: "\(controller.installedModels.count) disponíveis",
+                    icon: "shippingbox",
+                    tint: .accentColor
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                sectionHeading("Ambiente de execução", subtitle: "Escolha o runtime e o modelo para este workspace.")
+                settingsSection
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 14)], spacing: 14) {
+                quickLink(
+                    title: "Explorar modelos",
+                    subtitle: "Pesquise no Hugging Face",
+                    icon: "magnifyingglass",
+                    page: .models
+                )
+                quickLink(
+                    title: "Conectar ao VS Code",
+                    subtitle: "Endpoint OpenAI local",
+                    icon: WorkspacePage.vscode.icon,
+                    page: .vscode
+                )
+            }
+        }
+    }
+
+    private var modelsPage: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            pageHeading(
+                "Modelos",
+                subtitle: "Configure o runtime e encontre modelos compatíveis com seu ambiente."
+            )
+            settingsSection
+            huggingFaceSection
+        }
+    }
+
+    private var chatPage: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            pageHeading(
+                "Playground",
+                subtitle: "Valide seu modelo local antes de conectá-lo ao fluxo de desenvolvimento."
+            )
+            chatSection
+        }
+    }
+
+    private var vscodePage: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            pageHeading(
+                "Integração com VS Code",
+                subtitle: "Use o serviço local em extensões que aceitam endpoints compatíveis com OpenAI."
+            )
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.title2)
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 46, height: 46)
+                        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(controller.isRunning ? "API pronta para conectar" : "Inicie o serviço para conectar")
+                            .font(.headline)
+                        Text("O endpoint fica disponível apenas neste computador.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(controller.isRunning ? "Serviço ativo" : "Iniciar serviço") {
+                        controller.startService()
+                    }
+                    .disabled(controller.isRunning)
+                }
+
+                Divider()
+                connectionValue(title: "Base URL", value: "http://127.0.0.1:11435/v1", symbol: "link")
+                connectionValue(
+                    title: "Modelo",
+                    value: controller.settings.model.isEmpty ? "Configure um modelo na seção Modelos" : controller.settings.model,
+                    symbol: "shippingbox"
+                )
+                connectionValue(title: "Chave de API", value: "Não necessária", symbol: "key")
+            }
+            .padding(20)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Como conectar", systemImage: "list.number")
+                    .font(.headline)
+                integrationStep("1", "Inicie o serviço local usando o botão acima.")
+                integrationStep("2", "Na extensão do VS Code, escolha um provedor compatível com OpenAI.")
+                integrationStep("3", "Informe a Base URL acima e use o modelo selecionado neste app.")
+                Text("A API é vinculada a 127.0.0.1. Não exponha a porta do serviço à rede.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
+
+        }
+    }
+
+    private var runtimeName: String {
+        Runtime(rawValue: controller.settings.provider)?.title ?? controller.settings.provider
+    }
+
     private var header: some View {
-        HStack {
-            Image(systemName: "cpu")
-                .font(.title2)
-            Text("Local AI")
-                .font(.title2.bold())
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("LOCAL AI  /  WORKSPACE")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.1)
+                    .foregroundStyle(.secondary)
+                Text((selectedPage ?? .overview).title)
+                    .font(.title3.weight(.semibold))
+            }
             Spacer()
-            Circle()
-                .fill(controller.isRunning ? .green : .gray)
-                .frame(width: 9, height: 9)
-            Text(controller.isRunning ? "Ativo" : "Parado")
-                .foregroundStyle(.secondary)
-            Button(controller.isRunning ? "Parar" : "Iniciar") {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(controller.isRunning ? Color.green : Color.secondary.opacity(0.55))
+                    .frame(width: 7, height: 7)
+                Text(controller.isRunning ? "Conectado" : "Offline")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.quaternary, in: Capsule())
+            Button {
                 controller.isRunning ? controller.stopService() : controller.startService()
+            } label: {
+                Label(
+                    controller.isRunning ? "Parar" : "Iniciar",
+                    systemImage: controller.isRunning ? "stop.fill" : "play.fill"
+                )
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
         }
-        .padding(18)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: controller.isRunning ? "checkmark.circle.fill" : "info.circle")
+                .foregroundStyle(controller.isRunning ? Color.green : Color.secondary)
+            Text(controller.status)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Text("LOCAL")
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .tracking(1)
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 9)
+    }
+
+    private func pageHeading(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .tracking(-0.5)
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func sectionHeading(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.headline)
+            Text(subtitle).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func statusMetric(title: String, value: String, icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(tint)
+            Text(title)
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .tracking(1)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(15)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+    }
+
+    private func quickLink(title: String, subtitle: String, icon: String, page: WorkspacePage) -> some View {
+        Button {
+            selectedPage = page
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.headline)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 38, height: 38)
+                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.subheadline.weight(.semibold))
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func connectionValue(title: String, value: String, symbol: String) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: symbol)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 4)
+            if title == "Base URL" {
+                Button("Copiar") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(value, forType: .string)
+                    controller.status = "Base URL copiada"
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private func integrationStep(_ number: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(number)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 22, height: 22)
+                .background(Color.accentColor.opacity(0.1), in: Circle())
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var settingsSection: some View {
@@ -487,6 +882,9 @@ private struct ContentView: View {
                     }
                     .disabled(!controller.isRunning || controller.isBusy)
                 }
+                if controller.isDownloading {
+                    ProgressView("Baixando modelo do Hugging Face…")
+                }
                 if !controller.searchResults.isEmpty {
                     ForEach(controller.searchResults) { model in
                         HStack(alignment: .center) {
@@ -546,18 +944,4 @@ private struct ContentView: View {
         }
     }
 
-    private var ideSection: some View {
-        GroupBox("Conectar uma IDE") {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("API compatível com OpenAI (disponível somente neste computador):")
-                Label("Base URL: http://127.0.0.1:11435/v1", systemImage: "link")
-                Label("Modelo: \(controller.settings.model.isEmpty ? "<modelo configurado no app>" : controller.settings.model)", systemImage: "shippingbox")
-                Text("No VS Code, use uma extensão que permita configurar um endpoint OpenAI personalizado. Não exponha essa porta à rede.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 6)
-        }
-    }
 }

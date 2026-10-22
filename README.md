@@ -2,6 +2,8 @@
 
 Aplicativo desktop para usar modelos de linguagem localmente no macOS Apple Silicon. A interface SwiftUI controla um serviço Python local, que pode executar modelos via MLX ou encaminhar requisições para Ollama e llama.cpp. O serviço também oferece busca/download no Hugging Face e uma API compatível com OpenAI para IDEs.
 
+A interface nativa organiza o workspace em Visão geral, Modelos, Playground e integração com VS Code, com navegação adaptável ao tamanho da janela. Configure o runtime, gerencie modelos e copie a Base URL local para extensões do VS Code compatíveis com endpoints OpenAI.
+
 ## Requisitos
 
 - macOS 13 ou posterior para a interface SwiftUI.

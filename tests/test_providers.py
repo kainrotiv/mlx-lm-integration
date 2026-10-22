@@ -1,5 +1,6 @@
 import json
 import types
+import io
 import tempfile
 import threading
 import unittest
@@ -7,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from local_ai.huggingface import download_model
+from local_ai.huggingface import download_model, search_models
 from local_ai.providers import LlamaCppProvider, MLXProvider, OllamaProvider
 from local_ai.settings import Settings
 
@@ -152,6 +153,26 @@ class ProviderTests(unittest.TestCase):
                 result = download_model("org-name/model-name")
             self.assertEqual(result, target_root / "models" / "org-name" / "model-name")
             self.assertTrue(result.parent.exists())
+
+    def test_hugging_face_search_maps_public_api_results(self):
+        response = io.BytesIO(
+            json.dumps(
+                [{"id": "org/model", "downloads": 123, "likes": 4, "pipeline_tag": "text-generation"}]
+            ).encode()
+        )
+        with patch("local_ai.huggingface.urllib.request.urlopen", return_value=response):
+            models = search_models("org")
+        self.assertEqual(
+            models,
+            [
+                {
+                    "id": "org/model",
+                    "downloads": 123,
+                    "likes": 4,
+                    "pipeline_tag": "text-generation",
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":

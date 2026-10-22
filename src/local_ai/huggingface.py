@@ -34,16 +34,23 @@ def search_models(query: str, limit: int = 20) -> list[dict[str, Any]]:
         raise HuggingFaceError(f"Hugging Face returned HTTP {error.code}.") from error
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise HuggingFaceError(f"Could not search Hugging Face: {error}") from error
-    return [
-        {
-            "id": item.get("id", ""),
-            "downloads": item.get("downloads", 0),
-            "likes": item.get("likes", 0),
-            "pipeline_tag": item.get("pipeline_tag"),
-        }
-        for item in results
-        if isinstance(item, dict)
-    ]
+    if not isinstance(results, list):
+        raise HuggingFaceError("Hugging Face returned an invalid model search response.")
+    models = []
+    for item in results:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise HuggingFaceError("Hugging Face returned an invalid model search result.")
+        models.append(
+            {
+                "id": item["id"],
+                "downloads": item.get("downloads") if isinstance(item.get("downloads"), int) else 0,
+                "likes": item.get("likes") if isinstance(item.get("likes"), int) else 0,
+                "pipeline_tag": item.get("pipeline_tag")
+                if isinstance(item.get("pipeline_tag"), str)
+                else None,
+            }
+        )
+    return models
 
 
 def download_model(repo_id: str) -> Path:
